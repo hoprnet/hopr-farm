@@ -23,7 +23,7 @@ contract HoprFarm is IERC777Recipient, ReentrancyGuard {
     using Arrays for uint256[];
 
     uint256 public constant TOTAL_INCENTIVE = 5000000 ether;
-    uint256 public constant WEEKLY_BLOCK_NUMBER = 44800; // Takig 13.5 s/block as average block time. thus 7*24*60*60/13.5 = 44800 blocks per week. 
+    uint256 public constant WEEKLY_BLOCK_NUMBER = 44800; // Taking 13.5 s/block as average block time. thus 7*24*60*60/13.5 = 44800 blocks per week. 
     uint256 public constant TOTAL_CLAIM_PERIOD = 13; // Incentives are released over a period of 13 weeks. 
     uint256 public constant WEEKLY_INCENTIVE = 384615384615384615384615; // 5000000/13 weeks There is very small amount of remainder
     // uint256 public constant WEEKLY_INCENTIVE_LAST = 384615384615384615384620; //
@@ -115,7 +115,7 @@ contract HoprFarm is IERC777Recipient, ReentrancyGuard {
         require(startBlock >= block.number, "HoprFarm: Start block number should be in the future");
         distributionBlocks[0] = startBlock;
         for (uint256 i = 1; i <= TOTAL_CLAIM_PERIOD; i++) {
-            distributionBlocks.push(startBlock + i * 44800);
+            distributionBlocks.push(startBlock + i * WEEKLY_BLOCK_NUMBER);
         }
     }
 
