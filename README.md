@@ -11,6 +11,11 @@ The winning Genesis DAO proposal for the HOPR launch instructed that 5 million H
 
 ### Installation
 
+- Set node version
+    ```
+    nvm use
+    ```
+    
 - Install packages 
     ```
     yarn

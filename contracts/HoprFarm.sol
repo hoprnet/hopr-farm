@@ -153,6 +153,27 @@ contract HoprFarm is IERC777Recipient, ReentrancyGuard {
     }
 
     /**
+     * @dev Get the total amount of incentive to be claimed by the liquidity provider.
+     * @param provider Account of liquidity provider
+     */
+    function incentiveToBeClaimed(address provider) public view returns (uint256) {
+        uint256 currentPeriod = distributionBlocks.findUpperBound(block.number);
+        // initial value should be 1
+        uint256 claimedPeriod = liquidityProviders[provider].claimedUntil;
+        // It's too early to claim for a new period.
+        if (currentPeriod < 1 || claimedPeriod >= currentPeriod) {
+            return 0;            
+        }
+        uint256 farmed;
+        for (uint256 i = claimedPeriod; i < currentPeriod - 1; i++) {
+            if (eligibleLiquidityPerPeriod[i] > 0) {
+                farmed = farmed.add(WEEKLY_INCENTIVE.mul(liquidityProviders[provider].eligibleBalance[i]).div(eligibleLiquidityPerPeriod[i]));
+            }
+        }
+        return farmed;
+    }
+
+    /**
      * @dev Claim incenvtives for an account. Update total claimed incentive.
      * @param provider Account of liquidity provider
      */
