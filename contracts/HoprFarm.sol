@@ -25,8 +25,8 @@ contract HoprFarm is IERC777Recipient, ReentrancyGuard {
     uint256 public constant TOTAL_INCENTIVE = 5000000 ether;
     uint256 public constant WEEKLY_BLOCK_NUMBER = 44800; // Taking 13.5 s/block as average block time. thus 7*24*60*60/13.5 = 44800 blocks per week. 
     uint256 public constant TOTAL_CLAIM_PERIOD = 13; // Incentives are released over a period of 13 weeks. 
-    uint256 public constant WEEKLY_INCENTIVE = 384615384615384615384615; // 5000000/13 weeks There is very small amount of remainder
-    // uint256 public constant WEEKLY_INCENTIVE_LAST = 384615384615384615384620; //
+    uint256 public constant WEEKLY_INCENTIVE = 384615384615384615384615; // 5000000/13 weeks There is very small amount of remainder for the last week (+5 wei)
+
     // setup ERC1820
     IERC1820Registry private constant ERC1820_REGISTRY = IERC1820Registry(0x1820a4B7618BdE71Dce8cdc73aAB6C95905faD24);
     bytes32 private constant TOKENS_RECIPIENT_INTERFACE_HASH = keccak256("ERC777TokensRecipient");
@@ -95,7 +95,7 @@ contract HoprFarm is IERC777Recipient, ReentrancyGuard {
         bytes calldata operatorData
     ) external override onlyMultisig(from) nonReentrant {
         require(msg.sender == address(hopr), "HoprFarm: Sender must be HOPR token");
-        require(to == address(this), "HoprFarm: Must be sending tokens to HoprWrapper");
+        require(to == address(this), "HoprFarm: Must be sending tokens to HOPR farm");
         require(amount == TOTAL_INCENTIVE, "HoprFarm: Only accept 5 million HOPR token");
         // take block number from userData, varies from 0x000000 to 0xffffff.
         // This value is sufficient as 0xffff will be in March 2023.
