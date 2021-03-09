@@ -134,6 +134,78 @@ contract HoprFarm is IERC777Recipient, ReentrancyGuard {
     }
 
     /**
+     * @dev Claim incenvtives for an account. Update total claimed incentive.
+     * @param provider Account of liquidity provider
+     */
+    function claimFor(address provider) external nonReentrant {
+        uint256 currentPeriod = distributionBlocks.findUpperBound(block.number);
+        require(currentPeriod > 1, "HoprFarm: Too early to claim");
+        // initial value should be 1
+        uint256 claimedPeriod = liquidityProviders[provider].claimedUntil;
+        require(claimedPeriod < currentPeriod, "HoprFarm: Already claimed");
+        uint256 farmed;
+        for (uint256 i = claimedPeriod; i < currentPeriod - 1; i++) {
+            if (eligibleLiquidityPerPeriod[i] > 0) {
+                farmed = farmed.add(WEEKLY_INCENTIVE.mul(liquidityProviders[provider].eligibleBalance[i]).div(eligibleLiquidityPerPeriod[i]));
+            }
+        }
+        liquidityProviders[provider].claimedUntil = currentPeriod;
+        claimedIncentive = claimedIncentive.add(farmed);
+        // transfer farmed tokens to the provider
+        hopr.safeTransfer(provider, farmed);
+        emit IncentiveClaimed(provider, currentPeriod, farmed);
+    }
+
+    /**
+     * @dev liquidity provider deposits their Uniswap HOPR-DAI tokens to the contract
+     * It updates the current balance and the eligible farming balance
+     * Thanks to `permit` function of UNI token (see below, link to source code), 
+     * https://github.com/Uniswap/uniswap-v2-core/blob/master/contracts/UniswapV2ERC20.sol
+     * LPs do not need to call `approve` seperately. `spender` is this farm contract. 
+     * This function can be called by anyone with a valid signature of liquidity provider.
+     * @param amount Amount of pool token to be staked into the contract. It is also the amount in the signature.
+     * @param owner Address of the liquidity provider.
+     * @param deadline Timestamp after which the signature is no longer valid.
+     * @param v ECDSA signature.
+     * @param r ECDSA signature.
+     * @param s ECDSA signature.
+     */
+    function openFarmWithPermit(uint256 amount, address owner, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external nonReentrant {
+        IUniswapV2Pair(address(pool)).permit(owner, address(this), amount, deadline, v, r, s);
+        _openFarm(amount, owner);
+    }
+
+    /**
+     * @dev Called by liquidty provider to deposit their Uniswap HOPR-DAI tokens to the contract
+     * It updates the current balance and the eligible farming balance
+     * @param amount Amount of pool token to be staked into the contract.
+     */
+    function openFarm(uint256 amount) external nonReentrant {
+        _openFarm(amount, msg.sender);
+    }
+
+    /**
+     * @dev liquidity provider removes their Uniswap HOPR-DAI tokens to the contract
+     * It updates the current balance and the eligible farming balance
+     * @param amount Amount of pool token to be removed from the contract.
+     */
+    function closeFarm(uint256 amount) external nonReentrant {
+        // update balance to the right phase
+        uint256 currentPeriod = distributionBlocks.findUpperBound(block.number);
+        // always add currentBalance
+        uint256 newBalance = liquidityProviders[msg.sender].currentBalance.sub(amount);
+        liquidityProviders[msg.sender].currentBalance = newBalance;
+        totalPoolBalance = totalPoolBalance.sub(amount);      
+        // update eligible balance
+        updateEligibleBalance(msg.sender, newBalance, currentPeriod);
+        // transfer token
+        pool.transfer(msg.sender, amount);
+        // emit event
+        emit TokenRemoved(msg.sender, currentPeriod, amount);
+
+    }
+
+    /**
      * @dev returns the first index that contains a value greater or equal to the current `block.number`
      * If all numbers are strictly below block.number, returns array length.
      * @notice get the current farm period. 0 means "not started", 1 means "1st period", ...
@@ -174,71 +246,6 @@ contract HoprFarm is IERC777Recipient, ReentrancyGuard {
     }
 
     /**
-     * @dev Claim incenvtives for an account. Update total claimed incentive.
-     * @param provider Account of liquidity provider
-     */
-    function claimFor(address provider) public nonReentrant {
-        uint256 currentPeriod = distributionBlocks.findUpperBound(block.number);
-        require(currentPeriod > 1, "HoprFarm: Too early to claim");
-        // initial value should be 1
-        uint256 claimedPeriod = liquidityProviders[provider].claimedUntil;
-        require(claimedPeriod < currentPeriod, "HoprFarm: Already claimed");
-        uint256 farmed;
-        for (uint256 i = claimedPeriod; i < currentPeriod - 1; i++) {
-            if (eligibleLiquidityPerPeriod[i] > 0) {
-                farmed = farmed.add(WEEKLY_INCENTIVE.mul(liquidityProviders[provider].eligibleBalance[i]).div(eligibleLiquidityPerPeriod[i]));
-            }
-        }
-        liquidityProviders[provider].claimedUntil = currentPeriod;
-        claimedIncentive = claimedIncentive.add(farmed);
-        // transfer farmed tokens to the provider
-        hopr.safeTransfer(provider, farmed);
-        emit IncentiveClaimed(provider, currentPeriod, farmed);
-    }
-
-    /**
-     * @dev liquidity provider deposits their Uniswap HOPR-DAI tokens to the contract
-     * It updates the current balance and the eligible farming balance
-     * @param amount Amount of pool token to be staked into the contract.
-     */
-    function openFarm(uint256 amount) public nonReentrant {
-        // update balance to the right phase
-        uint256 currentPeriod = distributionBlocks.findUpperBound(block.number);
-        require(currentPeriod <= TOTAL_CLAIM_PERIOD, "HoprFarm: Farming ended");
-        // always add currentBalance
-        uint256 newBalance = liquidityProviders[msg.sender].currentBalance.add(amount);
-        liquidityProviders[msg.sender].currentBalance = newBalance;
-        totalPoolBalance = totalPoolBalance.add(amount);      
-        // update eligible balance
-        updateEligibleBalance(msg.sender, newBalance, currentPeriod);
-        // transfer token
-        pool.safeTransferFrom(msg.sender, address(this), amount);
-        // emit event
-        emit TokenAdded(msg.sender, currentPeriod, amount);
-    }
-
-    /**
-     * @dev liquidity provider removes their Uniswap HOPR-DAI tokens to the contract
-     * It updates the current balance and the eligible farming balance
-     * @param amount Amount of pool token to be removed from the contract.
-     */
-    function closeFarm(uint256 amount) public nonReentrant {
-        // update balance to the right phase
-        uint256 currentPeriod = distributionBlocks.findUpperBound(block.number);
-        // always add currentBalance
-        uint256 newBalance = liquidityProviders[msg.sender].currentBalance.sub(amount);
-        liquidityProviders[msg.sender].currentBalance = newBalance;
-        totalPoolBalance = totalPoolBalance.sub(amount);      
-        // update eligible balance
-        updateEligibleBalance(msg.sender, newBalance, currentPeriod);
-        // transfer token
-        pool.transfer(msg.sender, amount);
-        // emit event
-        emit TokenRemoved(msg.sender, currentPeriod, amount);
-
-    }
-
-    /**
      * @dev update the liquidity token balance, of which is used for calculating the result of farming
      * It updates the balance for the following periods. For the previous period, if the balance reduces 
      * the eligible balance of the previous round reduces. If the balance increases, it only affects the
@@ -260,5 +267,27 @@ contract HoprFarm is IERC777Recipient, ReentrancyGuard {
             liquidityProviders[account].eligibleBalance[i] = newBalance;
             eligibleLiquidityPerPeriod[i] = newEligibleLiquidityPerPeriod;
         }
+    }
+
+    /**
+     * @dev liquidity provider deposits their Uniswap HOPR-DAI tokens to the contract
+     * It updates the current balance and the eligible farming balance
+     * @param amount Amount of pool token to be staked into the contract.
+     * @param provider Address of the liquidity provider.
+     */
+    function _openFarm(uint256 amount, address provider) internal {
+        // update balance to the right phase
+        uint256 currentPeriod = distributionBlocks.findUpperBound(block.number);
+        require(currentPeriod <= TOTAL_CLAIM_PERIOD, "HoprFarm: Farming ended");
+        // always add currentBalance
+        uint256 newBalance = liquidityProviders[provider].currentBalance.add(amount);
+        liquidityProviders[provider].currentBalance = newBalance;
+        totalPoolBalance = totalPoolBalance.add(amount);      
+        // update eligible balance
+        updateEligibleBalance(provider, newBalance, currentPeriod);
+        // transfer token
+        pool.safeTransferFrom(provider, address(this), amount);
+        // emit event
+        emit TokenAdded(provider, currentPeriod, amount);
     }
 }
