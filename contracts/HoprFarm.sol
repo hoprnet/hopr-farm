@@ -315,7 +315,7 @@ contract HoprFarm is IERC777Recipient, ReentrancyGuard {
         // update eligible balance
         updateEligibleBalance(provider, newBalance, currentPeriod);
         // transfer token
-        pool.transfer(provider, amount);
+        pool.safeTransfer(provider, amount);
         // emit event
         emit TokenRemoved(provider, currentPeriod, amount);
     }
