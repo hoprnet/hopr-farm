@@ -164,6 +164,7 @@ contract HoprFarm is IERC777Recipient, ReentrancyGuard {
     /**
      * @dev Called by liquidty provider to deposit their Uniswap HOPR-DAI tokens to the contract
      * It updates the current balance and the eligible farming balance
+     * @notice An `apprpove(<farm contract>, amount)` needs to be called prior to `openFarm`
      * @param amount Amount of pool token to be staked into the contract.
      */
     function openFarm(uint256 amount) external nonReentrant {
