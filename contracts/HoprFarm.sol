@@ -288,13 +288,15 @@ contract HoprFarm is IERC777Recipient, ReentrancyGuard {
         // initial value should be 1
         uint256 claimedPeriod = liquidityProviders[provider].claimedUntil;
         require(claimedPeriod < currentPeriod, "HoprFarm: Already claimed");
+        // mark for next claim
+        uint256 newClaimedUntil = currentPeriod - 1;
         uint256 farmed;
-        for (uint256 i = claimedPeriod; i < currentPeriod - 1; i++) {
+        for (uint256 i = claimedPeriod; i < newClaimedUntil; i++) {
             if (eligibleLiquidityPerPeriod[i] > 0) {
                 farmed = farmed.add(WEEKLY_INCENTIVE.mul(liquidityProviders[provider].eligibleBalance[i]).div(eligibleLiquidityPerPeriod[i]));
             }
         }
-        liquidityProviders[provider].claimedUntil = currentPeriod;
+        liquidityProviders[provider].claimedUntil = newClaimedUntil;
         claimedIncentive = claimedIncentive.add(farmed);
         // transfer farmed tokens to the provider
         hopr.safeTransfer(provider, farmed);

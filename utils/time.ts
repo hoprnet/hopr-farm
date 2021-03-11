@@ -8,7 +8,13 @@ const latestBlock = async () => {
 }
 
 const advanceBlock = async() => {
-    return hre.ethers.provider.send("evm_mine", [new Date().getTime()]);
+  try {
+    await hre.ethers.provider.send("evm_mine", [new Date().getTime()]);
+  } catch (error) {
+    return new Promise((resolve) => {
+      setTimeout(() => resolve(hre.ethers.provider.send("evm_mine", [new Date().getTime()])), 50)
+    });
+  }
 }
 
 const advanceBlockTo = async (target: number) => {
