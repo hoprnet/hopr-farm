@@ -62,6 +62,22 @@ describe('HoprFarm', function () {
         
         // create farm contract
         hoprFarm = await deployContract3(owner, "HoprFarm", uniPair.address, hoprToken.address, ownerAddress);
+
+        // -----logs
+        console.table([
+            ["Owner", ownerAddress],
+            ["Provider 1", provider1Address],
+            ["Provider 2", provider2Address],
+            ["Provider 3", provider3Address],
+            ["UniFactory", uniswapFactory.address],
+            ["Hopr", hoprToken.address],
+            ["Dai", testDai.address],
+            ["UniPair", uniPair.address],
+            ["HoprFarm", hoprFarm.address],
+        ]);
+    }
+
+    const initialize = async () => {
         // initialize contract by providing 5 m HOPR and the starting blocknumber, starting block is 256
         await hoprToken.connect(owner).send(hoprFarm.address, utils.parseEther("5000000"), "0x000100");
 
@@ -69,17 +85,6 @@ describe('HoprFarm', function () {
         await uniPair.connect(owner).approve(hoprFarm.address, constants.MaxUint256);
         await uniPair.connect(provider1).approve(hoprFarm.address, constants.MaxUint256);
         await uniPair.connect(provider2).approve(hoprFarm.address, constants.MaxUint256);
-
-        // -----logs
-        console.log(`        | Owner | ${ownerAddress} |`)
-        console.log(`        | Provider 1 | ${provider1Address} |`)
-        console.log(`        | Provider 2 | ${provider2Address} |`)
-        console.log(`        | Provider 3 | ${provider3Address} |`)
-        console.log(`        | UniFactory | ${uniswapFactory.address} |`)
-        console.log(`        | Hopr       | ${hoprToken.address} |`)
-        console.log(`        | Dai        | ${testDai.address} |`)
-        console.log(`        | UniPair    | ${uniPair.address} |`)
-        console.log(`        | HoprFarm   | ${hoprFarm.address} |`)
     }
 
     const provideLiquidity = async (signer: Signer, amount: string) => {
@@ -110,18 +115,52 @@ describe('HoprFarm', function () {
         return {v, r, s}
     }
   
-    // reset contracts once
     describe('integration tests', function () {
         before(async function () {
             await reset()
         })
-    
+
+        it('cannot be initialized by a non multisig', async function () {
+            const randomHolder = (await ethers.getSigners())[4];
+            const randomHolderAddress = await randomHolder.getAddress();
+            // this holder has 5 million HOPR token
+            await hoprToken.mint(randomHolderAddress, utils.parseEther("5000000"), "0x", "0x");
+            expectRevert(hoprToken.connect(randomHolder).send(hoprFarm.address, utils.parseEther("5000000"), "0x000100"), "HoprFarm: Only DAO multisig")
+        })
+
+        it('cannot be initialized with a timestamp of different size', async function () {
+            expectRevert(hoprToken.connect(owner).send(hoprFarm.address, utils.parseEther("5000000"), "0x00000100"), "HoprFarm: Start block number needs to have three bytes")
+        })
+
+        it('cannot be initialized with a timestamp in the past', async function () {
+            expectRevert(hoprToken.connect(owner).send(hoprFarm.address, utils.parseEther("5000000"), "0x000001"), "HoprFarm: Start block number should be in the future")
+        })
+
+        it('cannot be initialized with differnt amount of incentive', async function () {
+            expectRevert(hoprToken.connect(owner).send(hoprFarm.address, utils.parseEther("4000000"), "0x000100"), "HoprFarm: Only accept 5 million HOPR token")
+        })
+
+        it('initializes the farm by multisig', async function () {
+            await initialize();
+        })
+
+        it('cannot be initialized again by the multisig', async function () {
+            const randomHolder = (await ethers.getSigners())[4];
+            const randomHolderAddress = await randomHolder.getAddress();
+
+            const FIVE_MILLION = utils.parseEther("5000000");
+            await hoprToken.connect(randomHolder).transfer(ownerAddress, FIVE_MILLION);
+            expectRevert(hoprToken.connect(owner).send(hoprFarm.address, utils.parseEther("5000000"), "0x000100"), "HoprFarm: Not initialized yet.")
+            // send those tokens back to random holder
+            await hoprToken.connect(owner).transfer(randomHolderAddress, FIVE_MILLION);
+        })
+
         it('provides the first liquidity from owner (100 HOPR and 100 DAI)', async function () {
             expect((await uniPair.balanceOf(ownerAddress)).toString()).to.equal(constants.Zero.toString()); 
             // add 100 HOPR and 100 Dai to the contract
             await provideLiquidity(owner, "100");
             const liquidity = await uniPair.balanceOf(ownerAddress);
-            console.log("Liquidity", liquidity.toString());
+            expect(liquidity.toString()).to.equal(utils.parseEther("100").sub(BigNumber.from(1000)).toString());
         })
 
         it('can receive ERC777 on HoprFarm contract', async function () {
@@ -165,7 +204,7 @@ describe('HoprFarm', function () {
             expect((await hoprFarm.currentFarmPeriod()).toString()).to.equal(constants.Zero.toString()); 
         })
         
-        it('provides 1/2/3 staked all their liquitidy tokens (100, 200, 200)', async function () {
+        it('provider 1/2/3 staked all their liquitidy tokens (100, 200, 200)', async function () {
             const FIVE_HUNDRED = utils.parseEther("500");
             expect((await hoprFarm.totalPoolBalance()).toString()).to.equal(FIVE_HUNDRED.toString()); 
             expect((await hoprFarm.eligibleLiquidityPerPeriod(1)).toString()).to.equal(FIVE_HUNDRED.toString()); 
@@ -189,7 +228,7 @@ describe('HoprFarm', function () {
 
         describe('Jump to period 1', function () {
             before(async function () {
-                await advanceBlockTo(claimBlocks[0])
+                await advanceBlockTo(claimBlocks[0] + 10)
             })
 
             it('provides liquidity by other LPs', async function () {
@@ -228,10 +267,16 @@ describe('HoprFarm', function () {
             })
 
             it('Jumping to claimBlocks[1] ... ', async function () {
-                await advanceBlockTo(claimBlocks[1])
+                await advanceBlockTo(claimBlocks[1] + 10)
             })
 
-            it('jumps to period 2 and ask provider 1 to claim (1/5 of the incentive from the 1st period). Its farm is still open', async function () {
+            it('has 1/5 to be claimed by provider 1', async function () {
+                const fifthOfCurrentIncentive = (await hoprFarm.WEEKLY_INCENTIVE()).div("5");
+
+                expect((await hoprFarm.incentiveToBeClaimed(provider1Address)).toString()).to.equal(fifthOfCurrentIncentive.toString()); 
+            })
+
+            it('claims (1/5 of the incentive from the 1st period) by provider 1. Its farm is still open', async function () {
                 const beforeClaimHopr = await hoprToken.balanceOf(provider1Address);
                 const beforeClaimPool = await uniPair.balanceOf(provider1Address);
                 await hoprFarm.claimFor(provider1Address);
@@ -243,6 +288,17 @@ describe('HoprFarm', function () {
                 expect(afterClaimHopr.sub(beforeClaimHopr).toString()).to.equal(fifthOfCurrentIncentive.toString()); 
                 expect(beforeClaimPool).to.equal(constants.Zero.toString()); 
                 expect(afterClaimPool).to.equal(constants.Zero.toString()); 
+            })
+
+            it('cannot claim again when incentives are claimed.', async function () {
+                expectRevert(hoprFarm.connect(provider1).claimAndClose(), "HoprFarm: Nothing to claim");
+            })
+
+            it('cannot claim for a non LP', async function () {
+                const randomHolder = (await ethers.getSigners())[5];
+                const randomHolderAddress = await randomHolder.getAddress();
+                // it emits an event with 0 token being transferred.
+                expectRevert(hoprFarm.claimFor(randomHolderAddress), "HoprFarm: Nothing to claim");
             })
         })
         
@@ -272,7 +328,7 @@ describe('HoprFarm', function () {
                 await advanceBlockTo(85000)
             })
             it('Jumping to claimBlocks[2] ... ', async function () {
-                await advanceBlockTo(claimBlocks[2])
+                await advanceBlockTo(claimBlocks[2] + 10)
             })
 
             it('provider 1 claims again. Received 1/4 of period incentive (200/400/200)', async function () {
@@ -312,6 +368,12 @@ describe('HoprFarm', function () {
 
                 expect(afterClaimPool.sub(beforeClaimPool).toString()).to.equal(constants.Zero.toString()); 
                 expect(afterClaimHopr.sub(beforeClaimHopr).toString()).to.equal(incentive.toString()); 
+            })
+
+            it('cannot openFarm and claim in the same period. Owner provides 10 liquidity tokens', async function () {
+                await hoprFarm.connect(owner).openFarm(utils.parseEther("10"));
+                expect((await hoprFarm.incentiveToBeClaimed(ownerAddress)).toString()).to.equal(constants.Zero.toString()); 
+                expectRevert(hoprFarm.claimFor(ownerAddress), "HoprFarm: Nothing to claim");
             })
         })
     })
