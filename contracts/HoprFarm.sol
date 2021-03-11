@@ -33,13 +33,12 @@ contract HoprFarm is IERC777Recipient, ReentrancyGuard {
 
     struct LiquidityProvider {
         mapping(uint256=>uint256) eligibleBalance; // Amount of liquidity tokens
-        uint256 stakeFrom;  // the first period where the liquidity provider starts to stake tokens
         uint256 claimedUntil; // the last period where the liquidity provider has claimed tokens
         uint256 currentBalance;
     }
 
     // an ascending block numbers of start/end of each farming interval. 
-    // E.g. the first farming interval is [distributionBlocks[0], distributionBlocks[1]).
+    // E.g. the first farming interval is (distributionBlocks[0], distributionBlocks[1]].
     uint256[] public distributionBlocks;
     mapping(uint256=>uint256) public eligibleLiquidityPerPeriod;
     mapping(address=>LiquidityProvider) public liquidityProviders;
@@ -217,19 +216,7 @@ contract HoprFarm is IERC777Recipient, ReentrancyGuard {
      */
     function incentiveToBeClaimed(address provider) public view returns (uint256) {
         uint256 currentPeriod = distributionBlocks.findUpperBound(block.number);
-        // initial value should be 1
-        uint256 claimedPeriod = liquidityProviders[provider].claimedUntil;
-        // It's too early to claim for a new period.
-        if (currentPeriod < 1 || claimedPeriod >= currentPeriod) {
-            return 0;            
-        }
-        uint256 farmed;
-        for (uint256 i = claimedPeriod; i < currentPeriod - 1; i++) {
-            if (eligibleLiquidityPerPeriod[i] > 0) {
-                farmed = farmed.add(WEEKLY_INCENTIVE.mul(liquidityProviders[provider].eligibleBalance[i]).div(eligibleLiquidityPerPeriod[i]));
-            }
-        }
-        return farmed;
+        return _incentiveToBeClaimed(currentPeriod, provider);
     }
 
     /**
@@ -285,18 +272,9 @@ contract HoprFarm is IERC777Recipient, ReentrancyGuard {
      */
     function _claimFor(uint256 currentPeriod, address provider) internal {
         require(currentPeriod > 1, "HoprFarm: Too early to claim");
-        // initial value should be 1
-        uint256 claimedPeriod = liquidityProviders[provider].claimedUntil;
-        require(claimedPeriod < currentPeriod, "HoprFarm: Already claimed");
-        // mark for next claim
-        uint256 newClaimedUntil = currentPeriod - 1;
-        uint256 farmed;
-        for (uint256 i = claimedPeriod; i < newClaimedUntil; i++) {
-            if (eligibleLiquidityPerPeriod[i] > 0) {
-                farmed = farmed.add(WEEKLY_INCENTIVE.mul(liquidityProviders[provider].eligibleBalance[i]).div(eligibleLiquidityPerPeriod[i]));
-            }
-        }
-        liquidityProviders[provider].claimedUntil = newClaimedUntil;
+        uint256 farmed = _incentiveToBeClaimed(currentPeriod, provider);
+        require(farmed > 0, "HoprFarm: Nothing to claim");
+        liquidityProviders[provider].claimedUntil = currentPeriod - 1;
         claimedIncentive = claimedIncentive.add(farmed);
         // transfer farmed tokens to the provider
         hopr.safeTransfer(provider, farmed);
@@ -321,5 +299,24 @@ contract HoprFarm is IERC777Recipient, ReentrancyGuard {
         pool.safeTransfer(provider, amount);
         // emit event
         emit TokenRemoved(provider, currentPeriod, amount);
+    }
+
+    /**
+     * @dev Private function that gets the total amount of incentive to be claimed by the liquidity provider.
+     * @param currentPeriod Current farm period
+     * @param provider Account of liquidity provider
+     */
+    function _incentiveToBeClaimed(uint256 currentPeriod, address provider) private view returns (uint256) {
+        uint256 claimedPeriod = liquidityProviders[provider].claimedUntil;
+        if (currentPeriod < 1 || claimedPeriod >= currentPeriod) {
+            return 0;            
+        }
+        uint256 farmed;
+        for (uint256 i = claimedPeriod; i < currentPeriod - 1; i++) {
+            if (eligibleLiquidityPerPeriod[i] > 0) {
+                farmed = farmed.add(WEEKLY_INCENTIVE.mul(liquidityProviders[provider].eligibleBalance[i]).div(eligibleLiquidityPerPeriod[i]));
+            }
+        }
+        return farmed;
     }
 }
