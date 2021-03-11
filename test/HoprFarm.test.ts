@@ -1,21 +1,25 @@
 import * as factoryBuild from "@uniswap/v2-core/build/UniswapV2Factory.json";
 import * as pairBuild from "@uniswap/v2-core/build/UniswapV2Pair.json";
-import { ethers } from 'hardhat'
-import { Contract, Signer, utils } from 'ethers'
+import { ethers, network } from 'hardhat'
+import { BigNumber, constants, Contract, Signer, utils } from 'ethers'
 import { getParamFromTxResponse } from '../utils/events';
 import{ expect } from "chai";
 import { it } from 'mocha';
 import { deployRegistry } from "../utils/registry";
 import { deployFromBytecode, deployContract, deployContract3 } from "../utils/contracts";
 import { advanceBlockTo } from "../utils/time";
+import expectRevert from "../utils/exception";
+import { getApprovalDigest, signTransactions } from "../utils/digest";
 
 describe('HoprFarm', function () {
     let owner: Signer;
     let provider1: Signer;
     let provider2: Signer;
+    let provider3: Signer;
     let ownerAddress: string;
     let provider1Address: string;
     let provider2Address: string;
+    let provider3Address: string;
     let hoprToken: Contract
     let testDai: Contract
     let uniswapFactory: Contract;
@@ -27,10 +31,11 @@ describe('HoprFarm', function () {
     let claimBlocks;
   
     const reset = async () => {
-        [owner, provider1, provider2] = await ethers.getSigners();
+        [owner, provider1, provider2, provider3] = await ethers.getSigners();
         ownerAddress = await owner.getAddress();
         provider1Address = await provider1.getAddress();
         provider2Address = await provider2.getAddress();
+        provider3Address = await provider3.getAddress();
 
         uniswapFactory = await deployFromBytecode(owner, factoryBuild.abi, factoryBuild.bytecode, ownerAddress);
 
@@ -38,6 +43,7 @@ describe('HoprFarm', function () {
         testDai = await deployContract(owner, "TestDai", ownerAddress);
         await testDai.transfer(provider1Address, utils.parseEther("1000"));
         await testDai.transfer(provider2Address, utils.parseEther("2000"));
+        await testDai.transfer(provider3Address, utils.parseEther("2000"));
 
         // create and airdrop HOPR
         erc1820 = await deployRegistry(owner);
@@ -46,6 +52,7 @@ describe('HoprFarm', function () {
         await hoprToken.mint(ownerAddress, utils.parseEther("5001000"), "0x", "0x");
         await hoprToken.mint(provider1Address, utils.parseEther("1000"), "0x", "0x");
         await hoprToken.mint(provider2Address, utils.parseEther("2000"), "0x", "0x");
+        await hoprToken.mint(provider3Address, utils.parseEther("2000"), "0x", "0x");
         
         // owner create Uni pair
         const tx = await uniswapFactory.connect(owner).createPair(testDai.address, hoprToken.address);
@@ -58,12 +65,16 @@ describe('HoprFarm', function () {
         // initialize contract by providing 5 m HOPR and the starting blocknumber, starting block is 256
         await hoprToken.connect(owner).send(hoprFarm.address, utils.parseEther("5000000"), "0x000100");
 
-        // potential liquidity providers give allowance
-        await uniPair.connect(owner).approve(hoprFarm.address, ethers.constants.MaxUint256);
-        await uniPair.connect(provider1).approve(hoprFarm.address, ethers.constants.MaxUint256);
-        await uniPair.connect(provider2).approve(hoprFarm.address, ethers.constants.MaxUint256);
+        // potential liquidity providers give allowance, except for LP3
+        await uniPair.connect(owner).approve(hoprFarm.address, constants.MaxUint256);
+        await uniPair.connect(provider1).approve(hoprFarm.address, constants.MaxUint256);
+        await uniPair.connect(provider2).approve(hoprFarm.address, constants.MaxUint256);
 
         // -----logs
+        console.log(`        | Owner | ${ownerAddress} |`)
+        console.log(`        | Provider 1 | ${provider1Address} |`)
+        console.log(`        | Provider 2 | ${provider2Address} |`)
+        console.log(`        | Provider 3 | ${provider3Address} |`)
         console.log(`        | UniFactory | ${uniswapFactory.address} |`)
         console.log(`        | Hopr       | ${hoprToken.address} |`)
         console.log(`        | Dai        | ${testDai.address} |`)
@@ -77,6 +88,27 @@ describe('HoprFarm', function () {
         await testDai.connect(signer).transfer(uniPair.address, utils.parseEther(amount));
         await uniPair.connect(owner).mint(signerAddress);
     }
+
+    const permitSignature = async (ownerIndex: number, amount: BigNumber|string, ddl?: BigNumber|number): Promise<{v:number, r:string, s:string}> => {
+        const owner = (await ethers.getSigners())[ownerIndex];
+        const ownerAddress = await owner.getAddress();
+        const nonce = await uniPair.nonces(ownerAddress);
+        const deadline = ddl ?? constants.MaxUint256;
+        const digest = await getApprovalDigest(
+          uniPair,
+          { owner: ownerAddress, spender: hoprFarm.address, value: BigNumber.from(amount) },
+          nonce,
+          BigNumber.from(deadline)
+        )
+        
+        // assuming the wallet is derived from mnemonic
+        const ownerWallet = ethers.Wallet.fromMnemonic((network.config.accounts as any).mnemonic, `m/44'/60'/0'/0/${ownerIndex}`);
+        const signingKey = new utils.SigningKey(ownerWallet.privateKey);
+        const {v, r, s} =  await signTransactions(signingKey, digest)
+
+        // using signing key
+        return {v, r, s}
+    }
   
     // reset contracts once
     describe('integration tests', function () {
@@ -85,7 +117,7 @@ describe('HoprFarm', function () {
         })
     
         it('provides the first liquidity from owner (100 HOPR and 100 DAI)', async function () {
-            expect((await uniPair.balanceOf(ownerAddress)).toString()).to.equal(ethers.constants.Zero.toString()); 
+            expect((await uniPair.balanceOf(ownerAddress)).toString()).to.equal(constants.Zero.toString()); 
             // add 100 HOPR and 100 Dai to the contract
             await provideLiquidity(owner, "100");
             const liquidity = await uniPair.balanceOf(ownerAddress);
@@ -101,9 +133,6 @@ describe('HoprFarm', function () {
 
         it('has hopr tokens on farm contract', async function () {
             expect((await hoprToken.balanceOf(hoprFarm.address)).toString()).to.equal(utils.parseEther("5000000").toString()); 
-            // const startBlock = await hoprFarm.distributionBlocks(0);
-            const currentBlock = await ethers.provider.getBlockNumber();
-            console.log(`Current block is ${currentBlock.toString()}`)
             claimBlocks = await Promise.all(period.map(async (c) => {
                 const num = await hoprFarm.distributionBlocks(c);
                 return parseInt(num);
@@ -115,31 +144,52 @@ describe('HoprFarm', function () {
         it('provides liquidity by other LPs', async function () {
             await provideLiquidity(provider1, "100");
             await provideLiquidity(provider2, "200");
+            await provideLiquidity(provider3, "200");
         })
 
         it('stakes liquidity', async function () {
             await hoprFarm.connect(provider1).openFarm(utils.parseEther("100"));
             await hoprFarm.connect(provider2).openFarm(utils.parseEther("200"));
-            expect((await uniPair.balanceOf(provider1Address)).toString()).to.equal(ethers.constants.Zero.toString()); 
-            expect((await uniPair.balanceOf(provider2Address)).toString()).to.equal(ethers.constants.Zero.toString()); 
+            expect((await uniPair.balanceOf(provider1Address)).toString()).to.equal(constants.Zero.toString()); 
+            expect((await uniPair.balanceOf(provider2Address)).toString()).to.equal(constants.Zero.toString()); 
         })
 
-        it('owners stakes some tokens at period 0', async function () {
-            const currentP = await hoprFarm.currentFarmPeriod();
-            console.log(`current farm period is ${currentP.toString()}`)
-            const liquidity = await uniPair.balanceOf(ownerAddress);
-            const virtualReturn = await hoprFarm.currentFarmIncentive(liquidity);
-            console.log(`Virtual return is ${virtualReturn.toString()}`)
+        it('stakes liquidity with permit', async function () {
+            expect((await uniPair.balanceOf(provider3Address)).toString()).to.equal(utils.parseEther("200").toString()); 
+            const sig = await permitSignature(3, utils.parseEther("200"));
+            await hoprFarm.connect(owner).openFarmWithPermit(utils.parseEther("200"), provider3Address, constants.MaxUint256, sig.v, sig.r, sig.s);
+            expect((await uniPair.balanceOf(provider3Address)).toString()).to.equal(constants.Zero.toString()); 
+        })
+
+        it('is in period 0', async function () {
+            expect((await hoprFarm.currentFarmPeriod()).toString()).to.equal(constants.Zero.toString()); 
+        })
+        
+        it('provides 1/2/3 staked all their liquitidy tokens (100, 200, 200)', async function () {
+            const FIVE_HUNDRED = utils.parseEther("500");
+            expect((await hoprFarm.totalPoolBalance()).toString()).to.equal(FIVE_HUNDRED.toString()); 
+            expect((await hoprFarm.eligibleLiquidityPerPeriod(1)).toString()).to.equal(FIVE_HUNDRED.toString()); 
+        })
+        
+        it('has no incentive to be claimed', async function () {
+            expect((await hoprFarm.incentiveToBeClaimed(provider1Address)).toString()).to.equal(constants.Zero.toString()); 
+            expect((await hoprFarm.incentiveToBeClaimed(provider2Address)).toString()).to.equal(constants.Zero.toString()); 
+            expect((await hoprFarm.incentiveToBeClaimed(provider3Address)).toString()).to.equal(constants.Zero.toString()); 
+        })
+
+        it('fails to claim', async function () {
+            await expectRevert(hoprFarm.claimFor(provider1Address), "HoprFarm: Too early to claim")
+        })
+
+        it('needs 250 liquidity tokens to have a third of the current incentive', async function () {
+            const virtualReturn = await hoprFarm.currentFarmIncentive(utils.parseEther("250"));
+            const thirdOfCurrentIncentive = (await hoprFarm.WEEKLY_INCENTIVE()).div("3");
+            expect(virtualReturn.toString()).to.equal(thirdOfCurrentIncentive.toString()); 
         })
 
         describe('Jump to period 1', function () {
             before(async function () {
                 await advanceBlockTo(claimBlocks[0])
-            })
-
-            it('increases block', async function () {
-                const currentBlock = await ethers.provider.getBlockNumber();
-                console.log(`Current block is ${currentBlock.toString()}`)
             })
 
             it('provides liquidity by other LPs', async function () {
@@ -177,17 +227,25 @@ describe('HoprFarm', function () {
                 await advanceBlockTo(45000)
             })
 
-            it('jumps to period 2 and ask provider 1 to claim', async function () {
+            it('Jumping to claimBlocks[1] ... ', async function () {
                 await advanceBlockTo(claimBlocks[1])
+            })
+
+            it('jumps to period 2 and ask provider 1 to claim (1/5 of the incentive from the 1st period). Its farm is still open', async function () {
                 const beforeClaimHopr = await hoprToken.balanceOf(provider1Address);
                 const beforeClaimPool = await uniPair.balanceOf(provider1Address);
                 await hoprFarm.claimFor(provider1Address);
                 const afterClaimHopr = await hoprToken.balanceOf(provider1Address);
                 const afterClaimPool = await uniPair.balanceOf(provider1Address);
-                console.log(`HOPR token from ${beforeClaimHopr.toString()} => ${afterClaimHopr.toString()}`)
-                console.log(`Pool token from ${beforeClaimPool.toString()} => ${afterClaimPool.toString()}`)
+
+                const fifthOfCurrentIncentive = (await hoprFarm.WEEKLY_INCENTIVE()).div("5");
+
+                expect(afterClaimHopr.sub(beforeClaimHopr).toString()).to.equal(fifthOfCurrentIncentive.toString()); 
+                expect(beforeClaimPool).to.equal(constants.Zero.toString()); 
+                expect(afterClaimPool).to.equal(constants.Zero.toString()); 
             })
         })
+        
         describe('Jump to period 3', function () {
             it('Jumping to claimBlocks[2] ... ', async function () {
                 await advanceBlockTo(50000)
@@ -217,40 +275,43 @@ describe('HoprFarm', function () {
                 await advanceBlockTo(claimBlocks[2])
             })
 
-            it('increases block', async function () {
-                const currentBlock = await ethers.provider.getBlockNumber();
-                console.log(`Current block is ${currentBlock.toString()}`)
-            })
-
-            it('provider 1 claims again', async function () {
+            it('provider 1 claims again. Received 1/4 of period incentive (200/400/200)', async function () {
                 const beforeClaimHopr = await hoprToken.balanceOf(provider1Address);
                 const beforeClaimPool = await uniPair.balanceOf(provider1Address);
                 await hoprFarm.claimFor(provider1Address);
                 const afterClaimHopr = await hoprToken.balanceOf(provider1Address);
                 const afterClaimPool = await uniPair.balanceOf(provider1Address);
-                console.log(`HOPR token from ${beforeClaimHopr.toString()} => ${afterClaimHopr.toString()}`)
-                console.log(`Pool token from ${beforeClaimPool.toString()} => ${afterClaimPool.toString()}`)
+
+                const fourthOfCurrentIncentive = (await hoprFarm.WEEKLY_INCENTIVE()).div("4");
+
+                expect(afterClaimHopr.sub(beforeClaimHopr).toString()).to.equal(fourthOfCurrentIncentive.toString()); 
+                expect(beforeClaimPool).to.equal(constants.Zero.toString()); 
+                expect(afterClaimPool).to.equal(constants.Zero.toString()); 
             })
 
-            it('provider 2 removes liquidity', async function () {
+            it('provider 2 removes liquidity. Nothing claimed, just receives its pool token', async function () {
                 const beforeClaimHopr = await hoprToken.balanceOf(provider2Address);
                 const beforeClaimPool = await uniPair.balanceOf(provider2Address);
                 await hoprFarm.connect(provider2).closeFarm(utils.parseEther("200"));
                 const afterClaimHopr = await hoprToken.balanceOf(provider2Address);
                 const afterClaimPool = await uniPair.balanceOf(provider2Address);
-                console.log(`HOPR token from ${beforeClaimHopr.toString()} => ${afterClaimHopr.toString()}`)
-                console.log(`Pool token from ${beforeClaimPool.toString()} => ${afterClaimPool.toString()}`)
+
+                expect(afterClaimPool.sub(beforeClaimPool).toString()).to.equal(utils.parseEther("200").toString()); 
+                expect(afterClaimHopr.sub(beforeClaimHopr).toString()).to.equal(constants.Zero.toString()); 
             })
 
-            it('provider 2 claims liquidity', async function () {
+            it('provider 2 claims liquidity. Pool tokens remains but HOPR amount increases 2/5 + 1/2 = 0.9 of period incentive', async function () {
                 // await advanceBlockTo(claimBlocks[2])
                 const beforeClaimHopr = await hoprToken.balanceOf(provider2Address);
                 const beforeClaimPool = await uniPair.balanceOf(provider2Address);
                 await hoprFarm.claimFor(provider2Address);
                 const afterClaimHopr = await hoprToken.balanceOf(provider2Address);
                 const afterClaimPool = await uniPair.balanceOf(provider2Address);
-                console.log(`HOPR token from ${beforeClaimHopr.toString()} => ${afterClaimHopr.toString()}`)
-                console.log(`Pool token from ${beforeClaimPool.toString()} => ${afterClaimPool.toString()}`)
+
+                const incentive = (await hoprFarm.WEEKLY_INCENTIVE()).mul("9").div("10");
+
+                expect(afterClaimPool.sub(beforeClaimPool).toString()).to.equal(constants.Zero.toString()); 
+                expect(afterClaimHopr.sub(beforeClaimHopr).toString()).to.equal(incentive.toString()); 
             })
         })
     })
