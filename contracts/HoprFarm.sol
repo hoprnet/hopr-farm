@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-pragma solidity ^0.6.0;
+pragma solidity 0.6.12;
 
 import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -207,6 +207,9 @@ contract HoprFarm is IERC777Recipient, ReentrancyGuard {
      */
     function currentFarmIncentive(uint256 amountToStake) public view returns (uint256) {
         uint256 currentPeriod = distributionBlocks.findUpperBound(block.number);
+        if (currentPeriod >= TOTAL_CLAIM_PERIOD) {
+            return 0;            
+        }
         return WEEKLY_INCENTIVE.mul(amountToStake).div(eligibleLiquidityPerPeriod[currentPeriod+1].add(amountToStake));
     }
 
@@ -237,7 +240,7 @@ contract HoprFarm is IERC777Recipient, ReentrancyGuard {
             }
         }
         uint256 newEligibleLiquidityPerPeriod = eligibleLiquidityPerPeriod[currentPeriod].sub(liquidityProviders[account].eligibleBalance[currentPeriod]).add(newBalance);
-        for (uint256 i = currentPeriod; i <= TOTAL_CLAIM_PERIOD; i++) {
+        for (uint256 i = currentPeriod; i < TOTAL_CLAIM_PERIOD; i++) {
             liquidityProviders[account].eligibleBalance[i] = newBalance;
             eligibleLiquidityPerPeriod[i] = newEligibleLiquidityPerPeriod;
         }
@@ -252,7 +255,7 @@ contract HoprFarm is IERC777Recipient, ReentrancyGuard {
     function _openFarm(uint256 amount, address provider) internal {
         // update balance to the right phase
         uint256 currentPeriod = distributionBlocks.findUpperBound(block.number);
-        require(currentPeriod <= TOTAL_CLAIM_PERIOD, "HoprFarm: Farming ended");
+        require(currentPeriod < TOTAL_CLAIM_PERIOD, "HoprFarm: Farming ended");
         // always add currentBalance
         uint256 newBalance = liquidityProviders[provider].currentBalance.add(amount);
         liquidityProviders[provider].currentBalance = newBalance;
@@ -278,7 +281,7 @@ contract HoprFarm is IERC777Recipient, ReentrancyGuard {
         claimedIncentive = claimedIncentive.add(farmed);
         // transfer farmed tokens to the provider
         hopr.safeTransfer(provider, farmed);
-        emit IncentiveClaimed(provider, currentPeriod, farmed);
+        emit IncentiveClaimed(provider, currentPeriod - 1, farmed);
     }
 
     /**
